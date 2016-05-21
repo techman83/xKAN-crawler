@@ -1,0 +1,92 @@
+#!/usr/bin/env perl
+
+use v5.010;
+use strict;
+use autodie qw(:all);
+use App::KSP_CKAN::Tools::Config;
+use App::KSP_CKAN::Crawler;
+use Getopt::Long;
+use File::Spec;
+use File::Path qw( mkpath );
+
+# PODNAME: xkan-crawler
+
+# ABSTRACT: xkan-crawler - script for crawling through the metadata
+
+# VERSION
+
+=head1 SYNOPSIS
+
+Usage:
+
+  Debugging commands:
+    
+  mirror-ckan --debug                     : Run with debugging enabled.
+
+=head1 Description
+
+This is a daemon for crawling through CKANs metadata.
+
+=head1 BUGS/Features Requests
+
+Please submit any bugs, feature requests to
+L<https://github.com/techman83/xKAN-crawler/issues> .
+
+Contributions are more than welcome!
+
+=head1 SEE ALSO
+
+L<App::KSP-CKAN::Crawler>
+
+=cut
+
+my $PROGNAME = (File::Spec->splitpath($0))[2];
+$PROGNAME ||= 'mirror-ckan';
+
+my $DEBUG  = 0;
+my $filename;
+
+# TODO: Allow config to be specified
+my $working = $ENV{HOME}."/xKAN-crawler";
+if ( ! -d $working ) {
+  mkpath($working);
+}
+
+# TODO: It'd be nice to specify a path/multiple files 
+my $getopts_rc = GetOptions(
+  "version"       => \&version,
+  "debug!"        => \$DEBUG,
+
+  "help|?"        => \&print_usage,
+);
+
+sub version {
+  $::VERSION ||= "Unreleased";
+  say "$PROGNAME version          : $::VERSION";
+  exit 1;
+}
+
+sub print_usage {
+  say q{
+  Usage:
+
+  Debugging commands:
+    
+  mirror-ckan --debug                     : Run with debugging enabled.
+  mirror-ckan --version                   : Run with debugging enabled.
+
+  For more documentation, use `perldoc xkan-crawler`.
+  };
+
+  exit 1;
+}
+
+my $config = App::KSP_CKAN::Tools::Config->new(
+  working   => $working,
+  debugging => $DEBUG,
+);
+my $crawler = App::KSP_CKAN::Crawler->new( config => $config );
+
+$crawler->run;
+
+__END__
