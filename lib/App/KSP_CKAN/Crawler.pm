@@ -10,10 +10,12 @@ use File::Path qw(remove_tree mkpath);
 use File::Slurp qw(read_dir);
 use File::Basename qw(basename);
 use App::KSP_CKAN::Tools::IA;
+use App::KSP_CKAN::Metadata::Ckan;
 use App::KSP_CKAN::Crawler::Schema;
 use App::KSP_CKAN::Crawler::InflateNetKAN;
 use Method::Signatures 20140224;
 use Carp qw(croak);
+use AnyEvent::ForkManager;
 use AnyEvent;
 use EV;
 use Moo;
@@ -47,6 +49,8 @@ has '_CKAN_meta_path' => ( is => 'ro', lazy => 1, builder => 1 );
 has '_output'         => ( is => 'ro', lazy => 1, builder => 1 );
 has '_inflator'       => ( is => 'ro', lazy => 1, builder => 1 );
 has '_ia'             => ( is => 'ro', lazy => 1, builder => 1 );
+has '_inflating'      => ( is => 'rw', default => sub { 0 } );
+has '_mirror_check'   => ( is => 'rw', default => sub { 0 } );
 
 method _build__schema {
   # TODO: Build a proper config here
@@ -113,13 +117,15 @@ method check_existing {
 
 method update_random_ckans($number = 20) {
   my $path = $self->_CKAN_meta_path;
-  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
-  # TODO: This may never finish need to use last_checked
+  # TODO: Maybe we shouldn't store the sha1 just a bool of
+  #       if one has one.
+  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => undef, last_checked => undef });
   $self->debug("Checking random ckans");
   foreach my $row (@rows) {
     $self->debug("Updating: ".$row->file);
     my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $path."/".$row->identifier."/".$row->file );
     $row->update( {
+      last_checked => \'NOW()',
       download_sha1 => $ckan->download_sha1,
     } );
   }
@@ -127,7 +133,10 @@ method update_random_ckans($number = 20) {
 
 method check_random_mirrored($number = 20) {
   my $path = $self->_CKAN_meta_path;
-  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => { '!=', 0 }, mirrored => 0 });
+
+  # TODO: At some point this will return nothing, we might want to start
+  #       crawling the rest to check for updates.
+  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => { '!=', undef }, download_sha1 => { '!=', 0 }, mirrored => undef });
   $self->debug("Checking random mirrored ckans");
   foreach my $row (@rows) {
     my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $path."/".$row->identifier."/".$row->file );
@@ -140,8 +149,7 @@ method check_random_mirrored($number = 20) {
   }
 }
 
-method inflate_random($number = 5) {
-  # TODO: This will inflate things that don't need inflating
+method inflate_random($number = 2) {
   my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
   my $path = $self->_CKAN_meta_path;
   $self->_CKAN_meta->pull;
@@ -149,22 +157,77 @@ method inflate_random($number = 5) {
   my $tmp = File::Temp::tempdir();
   my @files;
   $self->debug("Inflating random ckans");
+  
   foreach my $row (@rows) {
+    $self->debug("Copying: ".$row->file);
     my $file = $row->identifier.".netkan";
     my $output = $tmp."/$file";
     copy($path."/".$row->identifier."/".$row->file, $output);
     push(@files, $output);
   }
+
   $self->_inflator->inflate(\@files);
+ 
+  # TODO: Once commited + pushed it will cause the mirror process to take place.
+  #       We should either mirror straight away and pull the commit process to be
+  #       done at the end
+  foreach my $row (@rows) {
+    $self->debug("Consuming new metadata: ".$row->file);
+    my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $path."/".$row->identifier."/".$row->file );
+    $row->update( {
+      last_checked => \'NOW()',
+      download_sha1 => $ckan->download_sha1,
+    } );
+  }
+
   remove_tree($tmp);
+  $self->_inflating(0);
+  return;
 }
 
 method run {
-  my $update_ckan_meta  = AE::timer 0, 3600, sub { $self->update_ckan_meta; };
-  my $check_existing    = AE::timer 600, 3600, sub { $self->check_existing; };
-  my $update_random     = AE::timer 30, 300, sub { $self->update_random_ckans; };
-  my $check_random      = AE::timer 30, 300, sub { $self->check_random_mirrored; };
-  my $inflate_random    = AE::timer 60, 600, sub { $self->inflate_random; };
+  # TODO: Ponder our timings
+  my $update_ckan_meta  = AE::timer 0,    3600, sub { $self->update_ckan_meta; };
+  my $check_existing    = AE::timer 15,   3600, sub { $self->check_existing; };
+  my $update_random     = AE::timer 30,   120,  sub { $self->update_random_ckans; };
+
+  my $check_fork = AnyEvent::ForkManager->new(
+      max_workers => 1,
+      on_start    => sub { $self->_mirror_check(1) },
+      on_finish   => sub { $self->_mirror_check(0) },
+  );
+
+  my $check_random = AE::timer 30, 120, sub { 
+    if ($self->_mirror_check) {
+       $self->debug("Skipping inflation this round");
+       return;
+    }
+
+    $check_fork->start(
+      cb => sub {
+        $self->check_random_mirrored; 
+      },
+    );
+  };
+
+  my $inflate_fork = AnyEvent::ForkManager->new(
+      max_workers => 1,
+      on_start    => sub { $self->_mirror_check(1) },
+      on_finish   => sub { $self->_mirror_check(0) },
+  );
+
+  my $inflate_random =  AE::timer 60, 120, sub {
+    if ($self->_inflating) {
+       $self->debug("Skipping mirror check this round");
+       return;
+    }
+
+    $inflate_fork->start(
+      cb => sub {
+        $self->inflate_random;
+      },
+    );
+  };
   EV::loop; 
 }
 
