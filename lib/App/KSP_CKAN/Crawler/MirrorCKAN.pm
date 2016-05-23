@@ -1,4 +1,4 @@
-package App::KSP_CKAN::WebHooks::MirrorCKAN;
+package App::KSP_CKAN::Crawler::MirrorCKAN;
 
 use v5.010;
 use strict;
@@ -7,9 +7,10 @@ use autodie;
 use Method::Signatures 20140224;
 use File::chdir;
 use File::Path qw( mkpath );
+use File::Basename qw(basename);
 use Scalar::Util 'reftype';
 use Try::Tiny;
-use App::KSP_CKAN::Tools::Config;
+use Carp qw(croak);
 use Moo;
 use namespace::clean;
 
@@ -32,27 +33,25 @@ Webhook wrapper for Mirror CKAN on demand.
 
 =cut
 
-has 'config' => ( is => 'ro', lazy => 1, builder => 1 );
-has '_CKAN_meta'  => ( is => 'ro', lazy => 1, builder => 1 );
+my $Ref = sub {
+  croak("config isn't a 'App::KSP_CKAN::Tools::Config' object!") unless $_[0]->DOES("App::KSP_CKAN::Tools::Config");
+};
 
-# TODO: This is a hack, the application should be multi
-#       function aware. 
-method _build_config {
-  my $working = $ENV{HOME}."/CKAN-Webhooks/mirror";
-  if ( ! -d $working ) {
-    mkpath($working);
+my $Meta = sub {
+  croak("CKAN_meta isn't a 'App::KSP_CKAN::Tools::Git' object!") unless $_[0]->DOES("App::KSP_CKAN::Tools::Git");
+};
+
+has 'config'      => ( is => 'ro', required => 1, isa => $Ref );
+has 'CKAN_meta'   => ( is => 'ro', required => 1, isa => $Meta );
+has 'cache'       => ( is => 'ro', required => 1 );
+
+method _check_cached($hash) {
+  my @files = glob($self->cache."/*");
+  my $index = first_index { basename($_) =~ /^$hash/i } @files;
+  if ( $index != '-1' ) {
+    return $files[$index];
   }
-  return App::KSP_CKAN::Tools::Config->new(
-    working => $working,
-  );
-}
-
-method _build__CKAN_meta {
-  return App::KSP_CKAN::Tools::Git->new(
-    remote  => $self->config->CKAN_meta,
-    local   => $self->config->working,
-    clean   => 1,
-  );
+  return 0;
 }
 
 method mirror($files) {
@@ -60,8 +59,7 @@ method mirror($files) {
   my @files = reftype \$files ne "SCALAR" ? @{$files} : $files;
 
   # Prepare Enironment
-  $self->_CKAN_meta->pull;
-  local $CWD = $self->config->working."/".$self->_CKAN_meta->working;
+  local $CWD = $self->config->working."/".$self->CKAN_meta->working;
 
   foreach my $file (@files) {
     # Lets not try mirroring non existent files
@@ -71,9 +69,9 @@ method mirror($files) {
     }
     
     # Attempt Mirror
-    try {
+    #try {
       $self->upload_ckan($file);
-    };
+    #};
   }
 
   return 1;

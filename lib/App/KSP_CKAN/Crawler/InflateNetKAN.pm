@@ -36,7 +36,11 @@ my $Ref = sub {
 
 has 'config' => ( is => 'ro', required => 1, isa => $Ref );
 
-method inflate($files) {
+method push_ckan_meta {
+  $self->_push;
+}
+
+method inflate(:$files, :$cache) {
   # Lets take an array as well! 
   my @files = reftype \$files ne "SCALAR" ? @{$files} : $files;
 
@@ -45,6 +49,7 @@ method inflate($files) {
   $self->_CKAN_meta->_clean; # TODO: expose this method properly
   $self->_CKAN_meta->pull;
 
+  my @success;
   foreach my $file (@files) {
     if (! -e $file) {
       $self->warn("The file '".$file."' doesn't appear to exist");
@@ -56,17 +61,21 @@ method inflate($files) {
       config      => $config,
       file        => $file,
       ckan_meta   => $self->_CKAN_meta,
+      cache       => $cache,
       status      => $self->_status,
       rescan      => 1,
     );
-    $netkan->inflate;
+
+    # The netkan tool returns an error code > 0 on failure
+    if ($netkan->inflate == 0) {
+      push(@success, $file);
+    }
   }
 
-  $self->_push;
 
   # TODO: We're never going to want a status on the main project but
   #       we can probably replace it with something of in here.
-  return 1;
+  return @success;
 }
 
 1;
