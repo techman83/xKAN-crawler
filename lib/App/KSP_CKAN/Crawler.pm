@@ -15,7 +15,7 @@ use App::KSP_CKAN::Metadata::Ckan;
 use App::KSP_CKAN::Crawler::Schema;
 use App::KSP_CKAN::Crawler::InflateNetKAN;
 use App::KSP_CKAN::Crawler::MirrorCKAN;
-use List::MoreUtils qw(first_index any);
+use List::MoreUtils qw(first_index any none);
 use Method::Signatures 20140224;
 use Carp qw(croak);
 use AnyEvent::ForkManager;
@@ -152,15 +152,17 @@ method _check_output($path, $file) {
 
 # TODO: Oh gosh this is unwieldy, could do with a refactor.
 method inflate_random($number = 1) {
-  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
+  #my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
+  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ identifier => 'DogeCoinFlag' });
   my $path = $self->_CKAN_meta_path;
-  
+
   my $tmp = File::Temp::tempdir();
-  my @files;
   $self->debug("Inflating random ckans");
- 
+
+  # Copy our CKANs to NetKANs
+  my @files;
   foreach my $row (@rows) {
-    $self->debug("Copying: ".$row->file);
+    $self->info("Copying '".$row->file."' for inflation");
     my $file = $row->identifier.".netkan";
     my $output = $tmp."/$file";
     copy($path."/".$row->identifier."/".$row->file, $output);
@@ -170,8 +172,8 @@ method inflate_random($number = 1) {
   my $inflator = App::KSP_CKAN::Crawler::InflateNetKAN->new(
     config  => $self->config,
   );
-  
-  # TODO: Pull out our status data so we can log dead metadata
+ 
+  # Inflate our NetKANs 
   my @successes = $inflator->inflate( 
     files => \@files,
     cache => $tmp."/cache",
@@ -187,26 +189,32 @@ method inflate_random($number = 1) {
     $self->debug("Checking inflated file: ".$success);
     my $index = first_index { $_->identifier eq basename($success,".netkan") } @rows;
     my $row = $rows[$index];
-    $self->debug("Consuming new metadata: ".$row->file);
+    $self->info("Consuming new metadata: ".$row->file);
     my $out_path = $path."/".$row->identifier;
-    my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $out_path."/".$row->file );
-    $row->update( {
-      last_checked => \'NOW()',
-      download_sha1 => $ckan->download_sha1,
-    } );
    
     # A lot of metadata was handcrafted, potentially with incorrect names.
-    # lets remove the files we replace.
     my $original_file = $out_path."/".$row->file;
     my $new_file = $self->_check_output( $out_path, $original_file );
+    my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $out_path."/".$new_file );
+    $row->update( {
+      last_checked  => \'NOW()',
+      download_sha1 => $ckan->download_sha1,
+      failed        => 0,
+    } );
+   
+    # lets remove the files we replace.
     if ( $row->file ne $new_file ) {
       $self->info($new_file." didn't match original filename of ".$row->file);
       $self->info("Removing '".$row->file."' from metadata");
-      unlink($original_file) unless $self->is_debug;
+      $self->debug($original_file);
+      unlink $original_file;
       $self->_CKAN_meta->commit(
         file    => $original_file,
         message => "'".$row->file."' replaced by '".$new_file,
-      ) unless $self->is_debug;
+      );
+      $row->update( {
+        file => $new_file,
+      });
     } else {
       $self->debug($new_file." matched original filename of ".$row->file);
     }
@@ -215,7 +223,23 @@ method inflate_random($number = 1) {
     $mirror->mirror($out_path."/".$new_file);
   }
 
-  $self->_inflator->push_ckan_meta unless $self->is_debug;
+  # Check our failed files
+  foreach my $file (@files) {
+    if ( none { basename($_) eq basename($file) } @successes ) {
+      my $identifier = basename($file, ".netkan");
+      my $status = $inflator->_status->get_status($identifier);
+      my $index = first_index { $_->identifier eq $identifier } @rows;
+      my $row = $rows[$index];
+      $self->warn($row->file." failed to inflate");
+      $row->update( {
+        last_checked  => \'NOW()',
+        last_error    => $status->last_error,
+        failed        => 1,
+      } );
+    }
+  }
+
+  $inflator->push_ckan_meta unless $self->is_debug;
   $self->debug("Temp Path: ".$tmp);
   remove_tree($tmp) if ! $self->is_debug;
   return;

@@ -9,6 +9,7 @@ use File::chdir;
 use File::Path qw( mkpath );
 use File::Basename qw(basename);
 use Scalar::Util 'reftype';
+use List::MoreUtils 'first_index';
 use Try::Tiny;
 use Carp qw(croak);
 use Moo;
@@ -69,9 +70,9 @@ method mirror($files) {
     }
     
     # Attempt Mirror
-    #try {
+    try {
       $self->upload_ckan($file);
-    #};
+    };
   }
 
   return 1;

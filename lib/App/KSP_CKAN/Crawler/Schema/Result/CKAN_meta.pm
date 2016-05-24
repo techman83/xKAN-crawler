@@ -29,7 +29,7 @@ __PACKAGE__->add_columns(
                         mirrored => { 
                           data_type => 'bool',
                         },
-                        dead_url => { 
+                        failed => { 
                           data_type => 'bool',
                         },
                         last_error  => { 
