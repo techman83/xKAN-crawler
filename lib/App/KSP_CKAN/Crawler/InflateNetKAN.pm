@@ -56,8 +56,6 @@ method inflate(:$files, :$cache) {
 
   # Prepare Enironment
   $self->_mirror_files;
-  $self->_CKAN_meta->_clean; # TODO: expose this method properly
-  $self->_CKAN_meta->pull;
 
   my @success;
   foreach my $file (@files) {

@@ -200,6 +200,8 @@ method _remove_file($original_file, $new_file) {
 method inflate_random($number = 1) {
   my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
   my $path = $self->_CKAN_meta_path;
+  $self->_CKAN_meta->_clean; # TODO: expose this method properly
+  $self->_CKAN_meta->pull;
 
   my $tmp = File::Temp::tempdir();
   $self->debug("Inflating random ckans");
