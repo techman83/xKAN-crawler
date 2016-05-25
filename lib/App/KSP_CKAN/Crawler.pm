@@ -9,7 +9,8 @@ use File::Copy qw(copy);
 use File::Temp qw(tempdir);
 use File::Path qw(remove_tree mkpath);
 use File::Slurp qw(read_dir);
-use File::Basename qw(basename);
+use File::chdir;
+use File::Basename qw(basename fileparse);
 use App::KSP_CKAN::Tools::IA;
 use App::KSP_CKAN::Metadata::Ckan;
 use App::KSP_CKAN::Crawler::Schema;
@@ -53,6 +54,7 @@ has '_output'         => ( is => 'ro', lazy => 1, builder => 1 );
 has '_ia'             => ( is => 'ro', lazy => 1, builder => 1 );
 has '_inflating'      => ( is => 'rw', default => sub { 0 } );
 has '_mirror_check'   => ( is => 'rw', default => sub { 0 } );
+has '_random_mirror'  => ( is => 'rw', default => sub { 0 } );
 
 method _build__schema {
   # TODO: Build a proper config here
@@ -137,12 +139,44 @@ method check_random_mirrored($number = 20) {
   foreach my $row (@rows) {
     my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $path."/".$row->identifier."/".$row->file );
     $self->info("Checking mirror for: ".$ckan->mirror_item." - SHA1: ".$ckan->download_sha1) if $ckan->can_mirror;
+    my $mirrored = $self->_ia->ckan_mirrored( ckan => $ckan);
     $row->update( {
       last_checked => \'NOW()',
-      mirrored    => $self->_ia->ckan_mirrored( ckan => $ckan),
+      mirrored     => $mirrored,
+      can_mirror   => $ckan->can_mirror,
     } ) if $ckan->can_mirror;
-    sleep 5; # We're crawling, lets not hit the mirror too hard.
+    sleep 1; # We're crawling, lets not hit the mirror too hard.
   }
+}
+
+method mirror_random($number = 2) {
+  my $path = $self->_CKAN_meta_path;
+  my $cache = File::Temp::tempdir();
+
+  # TODO: If our file is already mirrored we may try continously
+  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, mirrored => 0, can_mirror => 1 });
+  $self->debug("Mirror random ckans");
+  my $mirror = App::KSP_CKAN::Crawler::MirrorCKAN->new(
+    config    => $self->config,
+    cache     => $cache,
+    CKAN_meta => $self->_CKAN_meta,
+  );
+  foreach my $row (@rows) {
+    my $ckan_file = $path."/".$row->identifier."/".$row->file;
+    my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $ckan_file );
+    $self->info("Mirroring: ".$ckan->mirror_item." - SHA1: ".$ckan->download_sha1);
+    $mirror->mirror($ckan_file);
+    sleep 1; # takes a moment to appear on the archive.:
+    my $mirrored = $self->_ia->ckan_mirrored( ckan => $ckan);
+    $row->update( {
+      last_checked => \'NOW()',
+      mirrored     => $mirrored,
+    } );
+    sleep 1; # We're crawling, lets not hit the mirror too hard.
+  }
+  
+  $self->debug("Temp Path: ".$cache);
+  remove_tree($cache) if ! $self->is_debug;
 }
 
 method _check_output($path, $file) {
@@ -150,10 +184,21 @@ method _check_output($path, $file) {
   return basename($newfile);
 }
 
+method _remove_file($original_file, $new_file) {
+  my($basename, $dir) = fileparse($original_file);
+  $self->info("Removing '".$basename."' from metadata");
+  local $CWD = $dir;
+  unlink($basename) or $self->fatal("Unable to remove $basename: $!");
+  $self->_CKAN_meta->commit(
+    file    => $original_file,
+    message => "'".$basename."' replaced by '".$new_file,
+  ) unless $self->is_debug;
+  return;
+}
+
 # TODO: Oh gosh this is unwieldy, could do with a refactor.
 method inflate_random($number = 1) {
-  #my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
-  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ identifier => 'DogeCoinFlag' });
+  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
   my $path = $self->_CKAN_meta_path;
 
   my $tmp = File::Temp::tempdir();
@@ -170,7 +215,8 @@ method inflate_random($number = 1) {
   }
 
   my $inflator = App::KSP_CKAN::Crawler::InflateNetKAN->new(
-    config  => $self->config,
+    config    => $self->config,
+    CKAN_meta => $self->_CKAN_meta,
   );
  
   # Inflate our NetKANs 
@@ -205,16 +251,10 @@ method inflate_random($number = 1) {
     # lets remove the files we replace.
     if ( $row->file ne $new_file ) {
       $self->info($new_file." didn't match original filename of ".$row->file);
-      $self->info("Removing '".$row->file."' from metadata");
-      $self->debug($original_file);
-      unlink $original_file;
-      $self->_CKAN_meta->commit(
-        file    => $original_file,
-        message => "'".$row->file."' replaced by '".$new_file,
-      );
+      $self->_remove_file($original_file, $new_file);
       $row->update( {
         file => $new_file,
-      });
+      }) unless $self->is_debug;
     } else {
       $self->debug($new_file." matched original filename of ".$row->file);
     }
@@ -247,28 +287,29 @@ method inflate_random($number = 1) {
 
 method run {
   # TODO: Ponder our timings
-  #my $update_ckan_meta  = AE::timer 0,    3600, sub { $self->update_ckan_meta; };
-  #my $check_existing    = AE::timer 15,   3600, sub { $self->check_existing; };
-  #my $update_random     = AE::timer 30,   120,  sub { $self->update_random_ckans; };
+  my $update_ckan_meta  = AE::timer 0,    3600, sub { $self->update_ckan_meta; };
+  my $check_existing    = AE::timer 60,   3600, sub { $self->check_existing; };
+  my $update_random     = AE::timer 30,   120,  sub { $self->update_random_ckans; };
 
+  # TODO: Could likely handle this forking more efficiently..
   my $check_fork = AnyEvent::ForkManager->new(
       max_workers => 1,
       on_start    => sub { $self->_mirror_check(1) },
       on_finish   => sub { $self->_mirror_check(0) },
   );
 
-  #my $check_random = AE::timer 30, 120, sub { 
-  #  if ($self->_mirror_check) {
-  #     $self->debug("Skipping mirror check this round");
-  #     return;
-  #  }
+  my $check_random = AE::timer 0, 120, sub { 
+    if ($self->_mirror_check) {
+       $self->debug("Skipping mirror check this round");
+       return;
+    }
 
-  #  $check_fork->start(
-  #    cb => sub {
-  #      $self->check_random_mirrored; 
-  #    },
-  #  );
-  #};
+    $check_fork->start(
+      cb => sub {
+        #$self->check_random_mirrored; 
+      },
+    );
+  };
 
   my $inflate_fork = AnyEvent::ForkManager->new(
       max_workers => 1,
@@ -276,7 +317,7 @@ method run {
       on_finish   => sub { $self->_inflating(0) },
   );
 
-  my $inflate_random =  AE::timer 0, 120, sub {
+  my $inflate_random =  AE::timer 30, 300, sub {
     if ($self->_inflating) {
        $self->debug("Skipping inflation this round");
        return;
@@ -288,6 +329,27 @@ method run {
       },
     );
   };
+  
+  my $mirror_fork = AnyEvent::ForkManager->new(
+      max_workers => 1,
+      on_start    => sub { $self->_random_mirror(1) },
+      on_finish   => sub { $self->_random_mirror(0) },
+  );
+
+  my $mirror_random =  AE::timer 60, 300, sub {
+    if ($self->_random_mirror) {
+       $self->debug("Skipping mirroring this round");
+       return;
+    }
+
+    $mirror_fork->start(
+      cb => sub {
+        $self->mirror_random;
+      },
+    );
+  };
+ 
+  # TODO: We should exit gracefully at the end of a loop 
   EV::loop; 
 }
 

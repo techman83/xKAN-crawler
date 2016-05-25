@@ -29,6 +29,9 @@ __PACKAGE__->add_columns(
                         mirrored => { 
                           data_type => 'bool',
                         },
+                        can_mirror => { 
+                          data_type => 'bool',
+                        },
                         failed => { 
                           data_type => 'bool',
                         },

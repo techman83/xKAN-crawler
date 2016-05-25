@@ -34,7 +34,17 @@ my $Ref = sub {
   croak("config isn't a 'App::KSP_CKAN::Tools::Config' object!") unless $_[0]->DOES("App::KSP_CKAN::Tools::Config");
 };
 
-has 'config' => ( is => 'ro', required => 1, isa => $Ref );
+my $Meta = sub {
+  croak("CKAN_meta isn't a 'App::KSP_CKAN::Tools::Git' object!") unless $_[0]->DOES("App::KSP_CKAN::Tools::Git");
+};
+
+has 'config'      => ( is => 'ro', required => 1, isa => $Ref );
+has 'CKAN_meta'   => ( is => 'ro', required => 1, isa => $Meta );
+has '_CKAN_meta'  => ( is => 'ro', builder => 1, lazy => 1 );
+
+method _build__CKAN_meta {
+  return $self->CKAN_meta;
+}
 
 method push_ckan_meta {
   $self->_push;
