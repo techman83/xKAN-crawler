@@ -138,7 +138,7 @@ method check_random_mirrored($number = 20) {
   $self->debug("Checking random mirrored ckans");
   foreach my $row (@rows) {
     my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $path."/".$row->identifier."/".$row->file );
-    $self->info("Checking mirror for: ".$ckan->mirror_item." - SHA1: ".$ckan->download_sha1) if $ckan->can_mirror;
+    $self->info("Checking mirror for: ".$ckan->mirror_item." - SHA1: ".$ckan->download_sha1);
     my $mirrored = $self->_ia->ckan_mirrored( ckan => $ckan);
     $row->update( {
       last_checked => \'NOW()',
