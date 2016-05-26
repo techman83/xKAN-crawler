@@ -144,7 +144,7 @@ method check_random_mirrored($number = 20) {
       last_checked => \'NOW()',
       mirrored     => $mirrored,
       can_mirror   => $ckan->can_mirror,
-    } ) if $ckan->can_mirror;
+    } );
     sleep 1; # We're crawling, lets not hit the mirror too hard.
   }
 }
