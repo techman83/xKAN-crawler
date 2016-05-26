@@ -176,7 +176,7 @@ method mirror_random($number = 2) {
   }
   
   $self->debug("Temp Path: ".$cache);
-  remove_tree($cache) if ! $self->is_debug;
+  remove_tree($cache) or $self->fatal("Couldn't remove $cache, $!");
 }
 
 method _check_output($path, $file) {
@@ -197,7 +197,7 @@ method _remove_file($original_file, $new_file) {
 }
 
 # TODO: Oh gosh this is unwieldy, could do with a refactor.
-method inflate_random($number = 1) {
+method inflate_random($number = 2) {
   my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
   my $path = $self->_CKAN_meta_path;
   $self->_CKAN_meta->_clean; # TODO: expose this method properly
@@ -281,9 +281,14 @@ method inflate_random($number = 1) {
     }
   }
 
+  # give the mirror a chance for the files to appear
+  # save triggering the webhooks to re-upload
+  # TODO: We could use the api to check here
+  sleep 30; 
+
   $inflator->push_ckan_meta unless $self->is_debug;
   $self->debug("Temp Path: ".$tmp);
-  remove_tree($tmp) if ! $self->is_debug;
+  remove_tree($tmp) or $self->fatal("Couldn't remove $tmp, $!");
   return;
 }
 
@@ -308,7 +313,7 @@ method run {
 
     $check_fork->start(
       cb => sub {
-        #$self->check_random_mirrored; 
+        $self->check_random_mirrored; 
       },
     );
   };
