@@ -149,7 +149,7 @@ method check_random_mirrored($number = 20) {
   }
 }
 
-method mirror_random($number = 2) {
+method mirror_random($number = 4) {
   my $path = $self->_CKAN_meta_path;
   my $cache = File::Temp::tempdir();
 
@@ -197,7 +197,7 @@ method _remove_file($original_file, $new_file) {
 }
 
 # TODO: Oh gosh this is unwieldy, could do with a refactor.
-method inflate_random($number = 2) {
+method inflate_random($number = 4) {
   my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
   my $path = $self->_CKAN_meta_path;
   $self->_CKAN_meta->_clean; # TODO: expose this method properly
