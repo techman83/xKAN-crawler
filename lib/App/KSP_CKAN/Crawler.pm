@@ -198,7 +198,7 @@ method _remove_file($original_file, $new_file) {
 
 # TODO: Oh gosh this is unwieldy, could do with a refactor.
 method inflate_random($number = 4) {
-  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0 });
+  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0, failed => { '!=', 1 }});
   my $path = $self->_CKAN_meta_path;
   $self->_CKAN_meta->_clean; # TODO: expose this method properly
   $self->_CKAN_meta->pull;
