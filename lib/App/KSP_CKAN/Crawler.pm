@@ -154,7 +154,7 @@ method mirror_random($number = 4) {
   my $cache = File::Temp::tempdir();
 
   # TODO: If our file is already mirrored we may try continously
-  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, mirrored => 0, can_mirror => 1 });
+  my @rows  = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, mirrored => 0, can_mirror => 1, failed => { '=', undef }});
   $self->debug("Mirror random ckans");
   my $mirror = App::KSP_CKAN::Crawler::MirrorCKAN->new(
     config    => $self->config,
@@ -165,12 +165,14 @@ method mirror_random($number = 4) {
     my $ckan_file = $path."/".$row->identifier."/".$row->file;
     my $ckan = App::KSP_CKAN::Metadata::Ckan->new( file => $ckan_file );
     $self->info("Mirroring: ".$ckan->mirror_item." - SHA1: ".$ckan->download_sha1);
-    $mirror->mirror($ckan_file);
+    my $upload_status = $mirror->mirror($ckan_file);
+    my $failed = $upload_status ? 0 : 1;
     sleep 1; # takes a moment to appear on the archive.:
     my $mirrored = $self->_ia->ckan_mirrored( ckan => $ckan);
     $row->update( {
       last_checked => \'NOW()',
       mirrored     => $mirrored,
+      failed       => $failed,
     } );
     sleep 1; # We're crawling, lets not hit the mirror too hard.
   }
@@ -198,7 +200,7 @@ method _remove_file($original_file, $new_file) {
 
 # TODO: Oh gosh this is unwieldy, could do with a refactor.
 method inflate_random($number = 4) {
-  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0, failed => { '!=', 1 }});
+  my @rows = $self->_schema->resultset('CKAN_meta')->rand($number)->search({ deleted => 0, download_sha1 => 0, failed => { '=', undef }});
   my $path = $self->_CKAN_meta_path;
   $self->_CKAN_meta->_clean; # TODO: expose this method properly
   $self->_CKAN_meta->pull;

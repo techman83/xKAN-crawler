@@ -55,27 +55,22 @@ method _check_cached($hash) {
   return 0;
 }
 
-method mirror($files) {
-  # Lets take an array as well! 
-  my @files = reftype \$files ne "SCALAR" ? @{$files} : $files;
-
+method mirror($file) {
   # Prepare Enironment
   local $CWD = $self->config->working."/".$self->CKAN_meta->working;
 
-  foreach my $file (@files) {
-    # Lets not try mirroring non existent files
-    if (! -e $file) {
-      $self->warn("The ckan '".$file."' doesn't appear to exist");
-      next;
-    }
-    
-    # Attempt Mirror
-    try {
-      $self->upload_ckan($file);
-    };
+  if (! -e $file) {
+    $self->warn("The ckan '".$file."' doesn't appear to exist");
+    next;
   }
-
-  return 1;
+  
+  # Attempt Mirror
+  my $success = 0;
+  try {
+    $success = $self->upload_ckan($file);
+  };
+  
+  return $success;
 }
 
 1;
